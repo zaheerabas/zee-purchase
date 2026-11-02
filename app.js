@@ -41,16 +41,23 @@ const I = {
   cloud: '<svg class="i" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a5 5 0 1 1 1-9.9A6 6 0 0 1 19.5 10 4 4 0 0 1 18 18z"/></svg>',
 };
 
-function toast(msg) {
-  const r = $("#toastRoot"); r.innerHTML = `<div class="toast" role="status">${esc(msg)}</div>`;
-  clearTimeout(toast.t); toast.t = setTimeout(() => r.innerHTML = "", 3000);
+const IC_OK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path class="draw" d="M5 12.5l4.5 4.5L19 7.5"/></svg>';
+function toast(msg, opts = {}) {
+  const r = $("#toastRoot"); clearTimeout(toast.t);
+  r.innerHTML = `<div class="toast ${opts.type || ""}" role="status">${opts.type === "ok" ? `<span class="ti">${IC_OK}</span>` : ""}<span class="tm">${esc(msg)}</span>${opts.action ? `<button class="tbtn">${esc(opts.action.label)}</button>` : ""}</div>`;
+  const el = r.firstElementChild;
+  const hide = () => { clearTimeout(toast.t); el.classList.add("out"); setTimeout(() => { if (el.parentNode) el.remove(); }, 200); };
+  if (opts.action) el.querySelector(".tbtn").onclick = () => { hide(); opts.action.fn(); };
+  toast.t = setTimeout(hide, opts.ms || 2800);
 }
+const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+const buzz = ms => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch { } };
 function ask(title, msg, ok = "Delete", danger = true) {
   return new Promise(res => {
     const root = $("#dlgRoot");
     root.innerHTML = `<div class="dlg-bg"><div class="dlg" role="alertdialog" aria-modal="true" aria-labelledby="dlgT"><h3 id="dlgT">${esc(title)}</h3><p>${esc(msg)}</p>
       <div class="row"><button class="btn" data-d="0">Keep</button><button class="btn ${danger ? "danger" : "pri"}" data-d="1">${esc(ok)}</button></div></div></div>`;
-    const done = v => { root.innerHTML = ""; document.removeEventListener("keydown", key, true); res(v); };
+    const done = v => { const bg = root.firstElementChild; document.removeEventListener("keydown", key, true); res(v); if (bg) { bg.classList.add("out"); setTimeout(() => { if (root.firstElementChild === bg) root.innerHTML = ""; }, 150); } };
     const key = e => { if (e.key === "Escape") { e.stopPropagation(); done(false); } };
     document.addEventListener("keydown", key, true);
     root.querySelector(".dlg-bg").addEventListener("click", e => { const b = e.target.closest("[data-d]"); if (b) done(b.dataset.d === "1"); else if (e.target.classList.contains("dlg-bg")) done(false); });
@@ -80,7 +87,8 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", applyTheme
 
 /* ================= config, cache, outbox, sync ================= */
 let cfg = ls.get("zee-config", null); // {mode:'cloud'|'local', url, pin, voiceLang}
-const state = { suppliers: {}, bills: {}, payments: {}, outbox: [], lastSync: 0, syncing: false, netErr: false, authErr: false, ai: null };
+const state = { suppliers: {}, bills: {}, payments: {}, outbox: [], lastSync: 0, syncing: false, netErr: false, authErr: false, ai: null, loading: false };
+const pendingDel = [];
 function loadCache() { const c = ls.get("zee-cache", {}); ["suppliers", "bills", "payments"].forEach(k => state[k] = c[k] || {}); state.outbox = ls.get("zee-outbox", []); state.lastSync = c.lastSync || 0; state.ai = c.ai ?? null; }
 function saveCache() {
   const ok = ls.set("zee-cache", { suppliers: state.suppliers, bills: state.bills, payments: state.payments, lastSync: state.lastSync, ai: state.ai }) && ls.set("zee-outbox", state.outbox);
@@ -148,13 +156,14 @@ async function sync(manual) {
     if (state.outbox.length) { const e = new Error(state.authErr || "offline"); e.code = state.authErr ? "bad_pin" : "network"; throw e; }
     const d = await api("all", {}, 60000);
     ["suppliers", "bills", "payments"].forEach(c => { const m = {}; (d[c] || []).forEach(o => { m[o.id] = o; }); state[c] = m; });
-    state.lastSync = Date.now(); state.netErr = false; state.authErr = false; saveCache();
+    pendingDel.forEach(p => { delete state[p.col][p.id]; });
+    state.lastSync = Date.now(); state.netErr = false; state.authErr = false; state.loading = false; saveCache();
     render(); refreshSheet();
-    if (manual) toast("Everything is up to date");
+    if (manual) toast("Everything is up to date", { type: "ok" });
   } catch (e) {
     if (["bad_pin", "locked", "not_setup"].includes(e.code)) { state.authErr = e.message; toast(e.message + " Check Settings."); }
     else { state.netErr = true; if (manual) toast("No connection. Your changes are safe on this device and will sync later."); }
-  } finally { state.syncing = false; updateSync(); }
+  } finally { state.syncing = false; updateSync(); if (state.loading) { state.loading = false; render(); } }
 }
 function updateSync() {
   const p = $("#syncPill"); if (!p) return;
@@ -225,11 +234,47 @@ function matchSupplier(name, id) {
   return Object.values(state.suppliers).find(s => { const sn = s.name.toLowerCase(); return sn === low || low.includes(sn) || sn.includes(low); }) || null;
 }
 
+const recentSups = () => { const seen = new Set(), out = []; billsArr().forEach(b => { if (!seen.has(b.supplierId) && state.suppliers[b.supplierId]) { seen.add(b.supplierId); out.push(state.suppliers[b.supplierId]); } }); Object.values(state.suppliers).forEach(s => { if (!seen.has(s.id)) out.push(s); }); return out.slice(0, 8); };
+
+/* delete with Undo: hidden at once, sent to Google after 5 s unless undone */
+function softDelete(col, id, label, after) {
+  const obj = state[col][id]; if (!obj) return;
+  delete state[col][id]; buzz(18);
+  const p = { col, id, obj, after };
+  p.timer = setTimeout(() => finalizeDel(p), 5200);
+  pendingDel.push(p);
+  toast(`${label} deleted`, { ms: 5000, action: { label: "Undo", fn: () => {
+    clearTimeout(p.timer); const i = pendingDel.indexOf(p); if (i < 0) return; pendingDel.splice(i, 1);
+    state[col][id] = obj; render(); refreshSheet(); toast(`${label} restored`, { type: "ok" });
+  } } });
+}
+function finalizeDel(p) {
+  const i = pendingDel.indexOf(p); if (i < 0) return;
+  pendingDel.splice(i, 1); clearTimeout(p.timer);
+  if (p.after) p.after();
+  commit({ kind: "delete", col: p.col, docId: p.id });
+}
+const flushDeletes = () => pendingDel.slice().forEach(finalizeDel);
+
 /* ================= routing & render ================= */
 const TABS = ["home", "bills", "suppliers", "reports", "settings"];
 const ui = { billQ: "", billMonth: "", repMonth: thisMonth(), repMode: "month", rateQ: "", supQ: "", supFilter: "all" };
 const tab = () => { const h = location.hash.replace("#", ""); return TABS.includes(h) ? h : "home"; };
-window.addEventListener("hashchange", () => { render(); window.scrollTo(0, 0); });
+function navigate() {
+  const run = () => { ui.enter = true; render(); window.scrollTo(0, 0); };
+  if (document.startViewTransition && !reduceMotion()) document.startViewTransition(run); else run();
+}
+window.addEventListener("hashchange", navigate);
+function countUp(root) {
+  if (reduceMotion() || !root) return;
+  $$("[data-count]", root).forEach(el => {
+    const to = n(el.dataset.count), f = el.dataset.fmt; if (!to) return;
+    const fmt = v => f === "rs" ? rs(v) : num(v), t0 = performance.now(), d = 650;
+    const step = now => { const p = Math.min(1, (now - t0) / d); el.textContent = p >= 1 ? fmt(to) : fmt(Math.round(to * (1 - Math.pow(2, -10 * p)))); if (p < 1) requestAnimationFrame(step); };
+    el.textContent = fmt(0); requestAnimationFrame(step);
+  });
+}
+const fv = (v, fmt = "rs", style = "") => `<div class="v num" data-count="${n(v)}" data-fmt="${fmt}"${style ? ` style="${style}"` : ""}>${fmt === "rs" ? rs(v) : num(v)}</div>`;
 
 function render() {
   const t = tab();
@@ -237,9 +282,27 @@ function render() {
   document.body.classList.toggle("nocfg", !cfg);
   $$(".needcfg").forEach(e => e.classList.toggle("hidden", !cfg));
   const ae = document.activeElement, focusId = ae && ae.id, pos = ae && ae.selectionStart;
-  $("#app").innerHTML = !cfg ? viewSetup() : ({ home: viewHome, bills: viewBills, suppliers: viewSuppliers, reports: viewReports, settings: viewSettings }[t])();
+  const app = $("#app");
+  app.innerHTML = !cfg ? viewSetup() : (state.loading && t !== "settings") ? viewSkeleton(t) : ({ home: viewHome, bills: viewBills, suppliers: viewSuppliers, reports: viewReports, settings: viewSettings }[t])();
   if (focusId && !$("#sheetRoot").innerHTML) { const el = document.getElementById(focusId); if (el) { el.focus(); try { el.setSelectionRange(pos, pos); } catch { } } }
+  if (ui.enter) {
+    ui.enter = false; app.classList.remove("enter"); void app.offsetWidth; app.classList.add("enter");
+    $$(".ph, .fig, .quick button, .li, .filters, .start, .installbar, .card", app).forEach((el, i) => el.style.setProperty("--i", Math.min(i, 14)));
+    countUp(app); clearTimeout(render.t); render.t = setTimeout(() => app.classList.remove("enter"), 1000);
+  }
   updateSync();
+}
+
+/* ================= skeletons ================= */
+const sk = (w, h, extra = "") => `<span class="sk${extra}" style="width:${w};height:${h}px"></span>`;
+const skRows = k => `<div class="list" aria-hidden="true">${Array.from({ length: k }, (_, i) => `<div class="li sk-row"><span class="sk" style="width:40px;height:40px;border-radius:12px;flex:none"></span><div class="main">${sk(["58%", "44%", "66%", "50%"][i % 4], 13)}${sk(["36%", "48%", "30%", "40%"][i % 4], 11)}</div><div class="amt">${sk("78px", 13)}${sk("52px", 10)}</div></div>`).join("")}</div>`;
+const skFigs = () => `<div class="figs" aria-hidden="true"><div class="fig hero">${sk("38%", 12, " inv")}<div style="height:10px"></div>${sk("62%", 32, " inv")}<div style="height:10px"></div>${sk("34%", 11, " inv")}</div><div class="fig">${sk("50%", 11)}<div style="height:10px"></div>${sk("40%", 24)}</div><div class="fig">${sk("60%", 11)}<div style="height:10px"></div>${sk("70%", 24)}</div></div>`;
+const skHead = () => `<div class="ph" aria-hidden="true"><div class="grow">${sk("min(260px,60%)", 30)}<div style="height:10px"></div>${sk("min(320px,80%)", 14)}</div></div>`;
+function viewSkeleton(t) {
+  const label = `<p class="sr" role="status">Loading the purchase book…</p>`;
+  if (t === "home") return label + skHead() + skFigs() + `<div class="grid2 sec"><section><div class="sec-h">${sk("120px", 16)}</div>${skRows(4)}</section><section><div class="sec-h">${sk("100px", 16)}</div>${skRows(3)}</section></div>`;
+  if (t === "reports") return label + skHead() + `<div class="filters">${sk("100%", 44)}${sk("100%", 44)}</div>` + skFigs() + `<div class="sec">${skRows(4)}</div>`;
+  return label + skHead() + `<div class="filters">${sk("100%", 46)}${sk("100%", 46)}</div>` + skRows(7);
 }
 
 /* ================= views ================= */
@@ -286,18 +349,21 @@ function viewHome() {
   return `${installPrompt && !ls.get("zee-install-dismissed", false) ? `<div class="installbar"><span class="qi" style="color:var(--gold)">${I.dl}</span><div class="t"><b>Install the app</b><br>Open it from your home screen, even without internet.</div><button class="btn sm pri" data-act="install">Install</button><button class="iconbtn" style="border:0;width:32px;height:32px" data-act="install-dismiss" aria-label="Not now">${I.x}</button></div>` : ""}
   <div class="ph"><div class="grow"><h1>${fmtMonth(m, true)}</h1><p>Everything bought for the shop this month.</p></div></div>
   <div class="figs">
-    <div class="fig hero"><div class="l">Bought this month</div><div class="v num">${rs(total)}</div><div class="sub">${prev ? `${rs(prev)} in ${fmtMonth(prevM, true)}` : `${mb.length} bill${mb.length === 1 ? "" : "s"} so far`}</div></div>
-    <div class="fig"><div class="l">Pieces</div><div class="v num">${num(pcs)}</div></div>
-    <div class="fig due"><div class="l">Owed to suppliers</div><div class="v num">${rs(payable)}</div></div>
+    <div class="fig hero"><div class="l">Bought this month</div>${fv(total)}<div class="sub">${prev ? `${rs(prev)} in ${fmtMonth(prevM, true)}` : `${mb.length} bill${mb.length === 1 ? "" : "s"} so far`}</div></div>
+    <div class="fig"><div class="l">Pieces</div>${fv(pcs, "num")}</div>
+    <div class="fig due"><div class="l">Owed to suppliers</div>${fv(payable)}</div>
   </div>
-  <div class="quick">
+  ${!Object.keys(state.bills).length ? `<section class="start card pad sec"><h2>Add your first bill</h2><p class="muted small">Three ways to record a purchase. Use whichever is quickest.</p><div class="ways">
+    <button data-act="new-bill" data-scan="1"><span class="qi">${I.cam}</span><b>Photo</b><span>Snap the paper bill and the app reads it</span></button>
+    <button data-act="voice"><span class="qi">${I.mic}</span><b>Speak</b><span>“Asal Din se 24 cap 45 rupay”</span></button>
+    <button data-act="new-bill"><span class="qi">${I.bill}</span><b>Type</b><span>Supplier, items and rates by hand</span></button></div></section>` : `<div class="quick">
     <button data-act="new-bill"><span class="qi">${I.bill}</span>New bill</button>
     <button data-act="new-bill" data-scan="1"><span class="qi">${I.cam}</span>Photo bill</button>
     <button data-act="voice"><span class="qi">${I.mic}</span>Speak</button>
-  </div>
+  </div>`}
   <div class="grid2 sec">
     <section><div class="sec-h"><h2>Latest bills</h2>${recent.length ? `<a class="link" href="#bills">See all</a>` : ""}</div>
-      <div class="list">${recent.length ? recent.map(billRow).join("") : emptyBox("bill", "No bills yet", "Enter a paper bill, photograph it, or just speak it.", newBillBtn())}</div></section>
+      <div class="list">${recent.length ? recent.map(billRow).join("") : emptyBox("bill", "No bills yet", "Your latest bills will show here.")}</div></section>
     <section><div class="sec-h"><h2>Who we owe</h2>${owing.length ? `<button class="btn ghost sm" style="margin-left:auto" data-act="new-payment">Record payment</button>` : ""}</div>
       <div class="list">${owing.length ? owing.map(({ s, bal }) => `<button class="li" data-act="open-supplier" data-id="${esc(s.id)}">${avatar(s.id, s.name)}<div class="main"><div class="t">${esc(s.name)}</div><div class="s">${esc(s.city || "City not set")}</div></div><div class="amt" style="color:var(--red)">${rs(bal)}</div></button>`).join("")
         : emptyBox("pay", "Nothing owed", "Unpaid amounts from bills show up here.")}</div></section>
@@ -377,9 +443,9 @@ function viewReports() {
       : `<label><span class="sr">Year</span><select class="inp" id="repYear">${years.map(y => `<option ${y === ui.repMonth.slice(0, 4) ? "selected" : ""}>${y}</option>`).join("")}</select></label>`}
   </div>
   <div class="figs">
-    <div class="fig hero"><div class="l">Purchases</div><div class="v num">${rs(total)}</div><div class="sub">${num(bills.reduce((t, b) => t + billPcs(b), 0))} pieces in ${bills.length} bill${bills.length === 1 ? "" : "s"}${disc ? ` · ${rs(disc)} discount` : ""}</div></div>
-    <div class="fig"><div class="l">Cargo / freight</div><div class="v num">${rs(freight)}</div></div>
-    <div class="fig due"><div class="l">Unpaid on these bills</div><div class="v num">${rs(total - paid)}</div></div>
+    <div class="fig hero"><div class="l">Purchases</div>${fv(total)}<div class="sub">${num(bills.reduce((t, b) => t + billPcs(b), 0))} pieces in ${bills.length} bill${bills.length === 1 ? "" : "s"}${disc ? ` · ${rs(disc)} discount` : ""}</div></div>
+    <div class="fig"><div class="l">Cargo / freight</div>${fv(freight)}</div>
+    <div class="fig due"><div class="l">Unpaid on these bills</div>${fv(total - paid)}</div>
   </div>
   ${!bills.length ? `<div class="list sec">${emptyBox("chart", `No bills in ${esc(label)}`, `Pick another ${ui.repMode}, or add bills to see the breakdown.`)}</div>` : ""}
   ${monthly}
@@ -427,16 +493,27 @@ function viewSettings() {
 }
 
 /* ================= sheets ================= */
-let sheet = null;
+let sheet = null, sheetPushed = false, voicePushed = false, ignorePop = false;
 function openSheet(s, html, size = "") {
-  const keepScroll = sheet && sheet.type === s.type && sheet.id === s.id ? ($(".sh-body") || {}).scrollTop : 0;
+  const same = sheet && sheet.type === s.type && sheet.id === s.id;
+  const keepScroll = same ? ($(".sh-body") || {}).scrollTop : 0;
+  const hadSheet = !!$("#sheetRoot .sheet-bg:not(.out)");
   sheet = s;
   $("#sheetRoot").innerHTML = `<div class="sheet-bg" data-act="bg"><div class="sheet ${size}" role="dialog" aria-modal="true">${html}</div></div>`;
+  if (same || hadSheet) { const bg = $("#sheetRoot .sheet-bg"); bg.style.animation = "none"; if (same) $(".sheet", bg).style.animation = "none"; }
   document.body.style.overflow = "hidden";
+  if (!sheetPushed) { history.pushState({ zee: "sheet" }, ""); sheetPushed = true; }
   if (keepScroll) $(".sh-body").scrollTop = keepScroll;
+  if (!same) countUp($("#sheetRoot"));
   const f = $("#sheetRoot [autofocus]"); if (f && matchMedia("(min-width:700px)").matches) f.focus();
 }
-function closeSheet() { sheet = null; draft = null; $("#sheetRoot").innerHTML = ""; document.body.style.overflow = ""; }
+function closeSheet(fromPop) {
+  sheet = null; draft = null;
+  const root = $("#sheetRoot"), bg = $(".sheet-bg", root);
+  const done = () => { if (root.firstElementChild === bg) { root.innerHTML = ""; document.body.style.overflow = ""; } };
+  if (bg && !reduceMotion()) { bg.classList.add("out"); setTimeout(done, 180); } else done();
+  if (sheetPushed) { sheetPushed = false; if (!fromPop) { ignorePop = true; history.back(); } }
+}
 async function tryClose() {
   if (sheet && sheet.dirty && !(await ask("Discard changes?", "What you typed in this form will be lost.", "Discard"))) return;
   closeSheet();
@@ -475,12 +552,12 @@ async function showBill(id) {
           <div class="tr"><span>Paid${n(b.paid) ? ` · ${esc(b.payMethod || "Cash")}` : ""}</span><span class="num" style="color:var(--green)">${rs(b.paid)}</span></div>
           <div class="tr ${due > 0.5 ? "due" : ""}"><span>Added to balance</span><span class="num">${rs(due)}</span></div>
         </div>
-        <div id="billPhoto">${hasPhoto ? `<div class="card pad muted small">Loading bill photo…</div>` : ""}</div>
+        <div id="billPhoto">${hasPhoto ? `<div class="sk photo-sk" role="status" aria-label="Loading bill photo"></div>` : ""}</div>
       </div>
     </div>
   </div>
   <div class="sh-foot"><button class="btn" data-act="open-supplier" data-id="${esc(b.supplierId)}">Supplier ledger</button><span style="flex:1"></span><button class="btn danger" data-act="del-bill" data-id="${esc(id)}" aria-label="Delete bill">${I.trash}<span>Delete</span></button></div>`, "wide");
-  if (hasPhoto) { const src = await photoSrc(b); const el = $("#billPhoto"); if (el && sheet && sheet.id === id) el.innerHTML = src ? `<a href="${esc(src)}" target="_blank" rel="noopener" aria-label="Open bill photo full size"><img class="photo" src="${esc(src)}" alt="Photo of the paper bill"></a>` : `<div class="card pad muted small">The photo will show when you're online.</div>`; }
+  if (hasPhoto) { const src = await photoSrc(b); const el = $("#billPhoto"); if (el && sheet && sheet.id === id) el.innerHTML = src ? `<a href="${esc(src)}" target="_blank" rel="noopener" aria-label="Open bill photo full size"><img class="photo" src="${esc(src)}" alt="Photo of the paper bill" onload="this.classList.add('ready')"></a>` : `<div class="card pad muted small">The photo will show when you're online.</div>`; }
 }
 
 function showSupplier(id) {
@@ -491,8 +568,8 @@ function showSupplier(id) {
       <div class="meta"><div style="font-weight:700;font-size:18px">${esc(s.name)}</div><div class="muted">${esc(s.city || "City not set")}${s.phone ? ` · <a href="tel:${esc(s.phone)}">${esc(s.phone)}</a>` : ""}</div></div></div>
     <div class="figs f2">
       <div class="fig ${bal > 0.5 ? "due" : ""}" style="grid-column:1/-1"><div class="l">${bal > 0.5 ? "We owe" : bal < -0.5 ? "Advance with supplier" : "Balance"}</div><div class="v num" ${bal < -0.5 ? 'style="color:var(--green)"' : ""}>${bal > 0.5 || bal < -0.5 ? rs(Math.abs(bal)) : "Clear"}</div></div>
-      <div class="fig"><div class="l">Total bought</div><div class="v num">${rs(bought)}</div></div>
-      <div class="fig"><div class="l">Total paid</div><div class="v num" style="color:var(--green)">${rs(paid)}</div></div>
+      <div class="fig"><div class="l">Total bought</div>${fv(bought)}</div>
+      <div class="fig"><div class="l">Total paid</div>${fv(paid, "rs", "color:var(--green)")}</div>
     </div>
     <div class="sec-h" style="margin:22px 0 10px"><h2>Ledger (khata)</h2><span class="muted small" style="margin-left:auto">newest first</span></div>
     <div class="list lg">${rows.map(r => { const [y, m, d] = (r.date || "--").split("-"); return `<div class="li" ${r.kind !== "payment" ? `role="button" tabindex="0" data-act="open-bill" data-id="${esc(r.ref.id)}" style="cursor:pointer"` : ""}>
@@ -522,7 +599,7 @@ function saveSupplier(id) {
   const name = $("#sName").value.trim(); if (!name) { toast("Enter the supplier name."); $("#sName").focus(); return; }
   const old = id ? state.suppliers[id] : null;
   const s = { ...(old || {}), id: id || uid(), name, city: $("#sCity").value.trim(), phone: $("#sPhone").value.trim(), opening: n($("#sOpen").value), notes: $("#sNotes").value.trim(), createdAt: old ? old.createdAt : Date.now() };
-  commit({ kind: "save", col: "suppliers", obj: s }); toast("Supplier saved"); sheet = null; showSupplier(s.id); render();
+  commit({ kind: "save", col: "suppliers", obj: s }); buzz(12); toast("Supplier saved", { type: "ok" }); sheet = null; showSupplier(s.id); render();
 }
 
 function paymentForm(supplierId, pre = {}) {
@@ -544,7 +621,7 @@ function showOwe() { const el = $("#pOwe"); if (!el) return; const b = supplierB
 function savePayment() {
   const amt = n($("#pAmt").value); if (amt <= 0) { toast("Enter the amount paid."); $("#pAmt").focus(); return; }
   const p = { id: uid(), supplierId: $("#pSup").value, amount: amt, date: $("#pDate").value || today(), method: $("#pMethod").value, note: $("#pNote").value.trim(), createdAt: Date.now() };
-  commit({ kind: "save", col: "payments", obj: p }); toast("Payment saved"); sheet = null; showSupplier(p.supplierId); render();
+  commit({ kind: "save", col: "payments", obj: p }); buzz(12); toast("Payment saved", { type: "ok" }); sheet = null; showSupplier(p.supplierId); render();
 }
 
 /* ================= bill form ================= */
@@ -557,12 +634,13 @@ function billForm(id, autoScan) {
   <div class="bf">
     <div class="stack">
       <div class="scan" id="scanBox">
-        <div class="ic" id="thumbBox">${I.cam}</div>
+        <div class="ic${draft.hadPhoto ? " sk" : ""}" id="thumbBox">${draft.hadPhoto ? "" : I.cam}</div>
         <div class="txt"><b>${draft.hadPhoto ? "Bill photo attached" : "Photo of the paper bill"}</b><div class="small muted" id="scanMsg">Snap the bill, then tap Read bill to fill in the lines. Always check them against the paper.</div></div>
         <div class="btns"><label class="btn gold sm" style="cursor:pointer">${I.cam}<span id="photoLbl">${draft.hadPhoto ? "Replace" : "Add photo"}</span><input type="file" id="photoIn" accept="image/*" capture="environment" class="hidden"></label>
         <button class="btn pri sm" id="scanBtn" data-act="scan" disabled>${I.spark}Read bill</button></div>
       </div>
       <div class="fgrid">
+        ${!id && sups.length ? `<div class="full"><span class="muted small" style="display:block;font-weight:600;margin-bottom:6px">Recent suppliers</span><div class="supchips">${recentSups().map(s => `<button type="button" data-act="pick-sup" data-id="${esc(s.id)}">${avatar(s.id, s.name)}${esc(s.name)}</button>`).join("")}</div></div>` : ""}
         <label class="field full"><span>Supplier</span><select id="bSup"><option value="">Choose supplier…</option>${sups.map(s => `<option value="${esc(s.id)}" ${s.id === b.supplierId ? "selected" : ""}>${esc(s.name)}${s.city ? " — " + esc(s.city) : ""}</option>`).join("")}<option value="__new">+ New supplier</option></select></label>
         <div class="full newsup ${sups.length ? "hidden" : ""}" id="newSup"><div class="fgrid st">
           <label class="field full"><span>New supplier name</span><input type="text" id="nsName" autocomplete="off" placeholder="As written on the bill"></label>
@@ -589,7 +667,7 @@ function billForm(id, autoScan) {
       <div class="tr"><span>Subtotal · <span id="tPcs">0</span> pcs</span><span class="num" id="tSub">0</span></div>
       <div class="tr"><label for="bDisc">Discount</label><input type="number" inputmode="decimal" id="bDisc" value="${esc(b.discount)}" placeholder="0"></div>
       <div class="tr big"><span>Net</span><span class="num" id="tNet">Rs 0</span></div>
-      <div class="tr"><label for="bPaid">Paid now</label><input type="number" inputmode="decimal" id="bPaid" value="${esc(b.paid)}" placeholder="0"></div>
+      <div class="tr"><span class="pl"><label for="bPaid">Paid now</label><button type="button" class="mini" data-act="paid-full">Full</button></span><input type="number" inputmode="decimal" id="bPaid" value="${esc(b.paid)}" placeholder="0"></div>
       <div class="tr"><label for="bMethod">Paid by</label><select id="bMethod">${METHODS.map(m => `<option ${m === b.payMethod ? "selected" : ""}>${m}</option>`).join("")}</select></div>
       <div class="tr due"><span>To supplier balance</span><span class="num" id="tDue">Rs 0</span></div>
       <div class="tr" style="padding-top:8px;border-top:1px solid var(--line)"><label for="bFreight">Cargo / freight</label><input type="number" inputmode="decimal" id="bFreight" value="${esc(b.freight)}" placeholder="0"></div>
@@ -598,7 +676,7 @@ function billForm(id, autoScan) {
   </div></div>
   <div class="sh-foot"><div class="net"><span>Net amount</span><b id="fNet">Rs 0</b></div><button class="btn" data-act="close">Cancel</button><button class="btn pri" data-act="save-bill">Save bill</button></div>`, "wide");
   if (!sups.length) $("#bSup").value = "__new";
-  if (draft.hadPhoto) photoSrc(b).then(src => { if (src && $("#thumbBox")) $("#thumbBox").innerHTML = `<img src="${esc(src)}" alt="">`; });
+  if (draft.hadPhoto) photoSrc(b).then(src => { const tb = $("#thumbBox"); if (!tb) return; tb.classList.remove("sk"); tb.innerHTML = src ? `<img src="${esc(src)}" alt="">` : I.cam; });
   recalc();
   if (autoScan) setTimeout(() => $("#photoIn") && $("#photoIn").click(), 60);
 }
@@ -643,7 +721,7 @@ async function saveBill() {
     delete b.photoId; b.localPhoto = key;
   }
   commit({ kind: "save", col: "bills", obj: JSON.parse(JSON.stringify(b)) });
-  toast(cfg.mode === "cloud" && !navigator.onLine ? "Bill saved on this device — it will sync when online" : "Bill saved");
+  buzz(12); toast(cfg.mode === "cloud" && !navigator.onLine ? "Saved on this phone. It will sync when online" : "Bill saved", { type: "ok" });
   sheet = null; showBill(b.id); render();
 }
 
@@ -653,7 +731,9 @@ async function scanBill() {
   const btn = $("#scanBtn"), msg = $("#scanMsg"), box = $("#scanBox");
   if (cfg.mode !== "cloud") { msg.textContent = "Reading bills needs the online connection. Connect in Settings, or enter the lines by hand."; return; }
   if (!navigator.onLine) { msg.textContent = "You're offline. The photo is kept with the bill; enter the lines by hand or read it later."; return; }
-  btn.disabled = true; box.classList.add("busy"); msg.textContent = "Reading the bill… this can take up to a minute.";
+  btn.disabled = true; box.classList.add("busy"); msg.innerHTML = `<span style="display:inline-flex;gap:8px;align-items:center"><span class="spin"></span>Reading the bill… up to a minute</span>`;
+  $("#lines").insertAdjacentHTML("afterend", `<div class="lines" id="readSk" aria-hidden="true">${[0, 1, 2].map(i => `<div class="line"><div class="nm">${sk(["80%", "65%", "72%"][i], 38)}${sk("45%", 30)}</div><div class="qw">${sk("100%", 38)}</div><div class="rw">${sk("100%", 38)}</div><div class="amt">${sk("60px", 16)}</div><span class="x"></span></div>`).join("")}</div>`);
+  $("#readSk").scrollIntoView({ block: "nearest", behavior: reduceMotion() ? "auto" : "smooth" });
   try {
     const r = await api("readBill", { data: draft.photo, known: Object.values(state.suppliers).map(s => s.name).slice(0, 80).join("; "), items: allItems().slice(0, 250).join("; ") }, 120000);
     state.ai = true;
@@ -663,7 +743,7 @@ async function scanBill() {
   } catch (e) {
     if (e.code === "no_ai") state.ai = false;
     msg.textContent = e.code === "network" ? "No connection. Try again when online, or enter the lines by hand." : e.message;
-  } finally { btn.disabled = false; box.classList.remove("busy"); }
+  } finally { btn.disabled = false; box.classList.remove("busy"); const rk = $("#readSk"); if (rk) rk.remove(); }
 }
 // fill the open bill form from a photo read or a spoken bill; learns names from saved bills
 function fillBill(r, append) {
@@ -693,6 +773,7 @@ let rec = null, listening = false, voiceBase = "";
 function openVoice() {
   const root = $("#voiceRoot");
   const formOpen = sheet && sheet.type === "billform";
+  if (!voicePushed) { history.pushState({ zee: "voice" }, ""); voicePushed = true; }
   root.innerHTML = `<div class="voice-bg" data-act="voice-bg"><div class="voice" role="dialog" aria-modal="true" aria-labelledby="vT">
     <div class="vtop"><h2 id="vT">${formOpen ? "Speak to fill this bill" : "Speak a bill, payment or question"}</h2><button class="iconbtn" style="border:0" data-act="voice-close" aria-label="Close">${I.x}</button></div>
     ${SR ? `<button class="mic" id="micBtn" data-act="mic" aria-label="Start listening">${I.mic}</button><div class="vhint" id="vHint">Tap the mic and speak in Urdu or English</div>`
@@ -708,7 +789,16 @@ function openVoice() {
   </div></div>`;
   if (!SR) $("#vText").focus();
 }
-function closeVoice() { stopListening(); $("#voiceRoot").innerHTML = ""; }
+function closeVoice(fromPop, handOver) {
+  stopListening();
+  const root = $("#voiceRoot"), bg = root.firstElementChild;
+  if (bg && !reduceMotion()) { bg.classList.add("out"); setTimeout(() => { if (root.firstElementChild === bg) root.innerHTML = ""; }, 180); } else root.innerHTML = "";
+  if (voicePushed) {
+    voicePushed = false;
+    if (handOver) { history.replaceState({ zee: "sheet" }, ""); sheetPushed = true; } // the voice entry becomes the form's back-button entry
+    else if (!fromPop) { ignorePop = true; history.back(); }
+  }
+}
 function startListening() {
   if (!SR) return;
   rec = new SR(); rec.lang = cfg.voiceLang || "ur-PK"; rec.interimResults = true; rec.continuous = true;
@@ -727,7 +817,7 @@ async function understand() {
   if (!text) { voiceOut("Say or type something first.", true); return; }
   if (cfg.mode !== "cloud") { voiceOut("Voice understanding needs the online connection. Connect in Settings.", true); return; }
   if (!navigator.onLine) { voiceOut("You're offline. Voice needs internet; you can still type the bill.", true); return; }
-  const btn = $("[data-act=understand]"); btn.disabled = true; voiceOut("Understanding…");
+  const btn = $("[data-act=understand]"); btn.disabled = true; voiceOut(`<span class="sr">Understanding…</span>${sk("82%", 12)}${sk("58%", 12)}`);
   const formOpen = sheet && sheet.type === "billform";
   const context = {
     today: today(), formOpen,
@@ -766,16 +856,16 @@ function handleVoice(r, formOpen) {
   if (r.action === "payment") {
     const s = matchSupplier(r.supplierName, r.supplierId);
     if (!s) { voiceOut("I couldn't match the supplier for this payment." + say, true); return; }
-    closeVoice(); sheet = null;
+    closeVoice(false, !sheetPushed); sheet = null;
     const method = METHODS.find(m => m.toLowerCase() === String(r.method || r.payMethod || "").toLowerCase());
     paymentForm(s.id, { amount: r.amount, method, note: r.note, date: r.date });
-    toast("Check the payment and tap Save");
+    toast("Check the payment, then tap Save");
     return;
   }
   if (r.action === "edit_bill") {
     const b = state.bills[r.billId];
     if (!b) { voiceOut("I couldn't tell which bill to change. Open the bill and use Speak there." + say, true); return; }
-    closeVoice(); sheet = null; billForm(b.id);
+    closeVoice(false, !sheetPushed); sheet = null; billForm(b.id);
     const c = r.changes || {};
     ["date", "invoiceNo"].forEach(k => { if (c[k]) $(k === "date" ? "#bDate" : "#bInv").value = c[k]; });
     if (c.discount != null) $("#bDisc").value = n(c.discount);
@@ -795,7 +885,7 @@ function handleVoice(r, formOpen) {
     return;
   }
   if (r.action === "new_bill" || r.action === "add_lines") {
-    closeVoice();
+    closeVoice(false, !sheetPushed);
     if (!(formOpen && sheet && sheet.type === "billform")) { sheet = null; billForm(null); }
     fillBill(r); sheet.dirty = true;
     toast("Bill filled from your voice — check and tap Save");
@@ -820,7 +910,7 @@ async function connect() {
   if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(url)) { toast("Paste the Web app link that starts with https://script.google.com/"); $("#cfgUrl").focus(); return; }
   if (!pin) { toast("Enter the PIN."); $("#cfgPin").focus(); return; }
   ls.set("zee-config-draft", { url });
-  const btn = $("[data-act=connect]"); btn.disabled = true; btn.textContent = "Connecting…";
+  const btn = $("[data-act=connect]"); btn.disabled = true; btn.innerHTML = `<span class="spin"></span>Connecting…`;
   const wasLocal = cfg && cfg.mode === "local";
   const prev = cfg; cfg = { ...(cfg || {}), mode: "cloud", url, pin, voiceLang: (cfg && cfg.voiceLang) || "ur-PK" };
   try {
@@ -833,7 +923,7 @@ async function connect() {
       Object.values(state.payments).forEach(o => state.outbox.push({ opId: uid(), kind: "save", col: "payments", obj: o }));
       saveCache();
     }
-    toast("Connected"); location.hash = "#home"; render(); sync();
+    state.loading = !wasLocal; buzz(12); toast("Connected", { type: "ok" }); if (location.hash !== "#home") location.hash = "#home"; ui.enter = true; render(); sync();
   } catch (e) {
     cfg = prev;
     toast(e.code === "bad_pin" ? "Wrong PIN." : e.code === "network" ? "Couldn't reach that link. Check the link and the internet." : e.message);
@@ -888,13 +978,20 @@ document.addEventListener("click", async e => {
   if (act === "sup-filter") { ui.supFilter = t.dataset.v; return render(); }
   if (act === "clear-bill-filter") { ui.billQ = ""; ui.billMonth = ""; return render(); }
   if (act === "add-line") { $("#lines").insertAdjacentHTML("beforeend", lineHtml()); const it = $$("#lines .line .it").pop(); it.focus(); it.scrollIntoView({ block: "center", behavior: "smooth" }); return; }
-  if (act === "rm-line") { t.closest(".line").remove(); if (!$$("#lines .line").length) $("#lines").insertAdjacentHTML("beforeend", lineHtml()); recalc(); sheet.dirty = true; return; }
-  if (act === "del-bill") { if (!(await ask("Delete this bill?", "Its amount comes off the supplier's balance. This can't be undone."))) return; const b = state.bills[id]; if (b && b.localPhoto) idb.del(b.localPhoto); commit({ kind: "delete", col: "bills", docId: id }); closeSheet(); render(); toast("Bill deleted"); return; }
-  if (act === "del-payment") { e.stopPropagation(); if (!(await ask("Delete this payment?", "The supplier's balance goes back up by this amount."))) return; commit({ kind: "delete", col: "payments", docId: id }); render(); refreshSheet(); toast("Payment deleted"); return; }
+  if (act === "rm-line") {
+    const l = t.closest(".line"); sheet.dirty = true;
+    const go = () => { l.remove(); if (!$$("#lines .line").length) $("#lines").insertAdjacentHTML("beforeend", lineHtml()); recalc(); };
+    if (reduceMotion()) go(); else { l.classList.add("out"); setTimeout(go, 150); }
+    return;
+  }
+  if (act === "pick-sup") { $("#bSup").value = id; $("#newSup").classList.add("hidden"); $$(".supchips button").forEach(b => b.classList.toggle("on", b === t)); sheet.dirty = true; const first = $("#lines .line .it"); if (first && !first.value) first.focus(); return; }
+  if (act === "paid-full") { const net = readLines().reduce((x, i) => x + i.qty * i.rate, 0) - n($("#bDisc").value); $("#bPaid").value = Math.max(0, Math.round(net)); recalc(); sheet.dirty = true; return; }
+  if (act === "del-bill") { const b = state.bills[id]; closeSheet(); softDelete("bills", id, "Bill", () => { if (b && b.localPhoto) idb.del(b.localPhoto); }); render(); return; }
+  if (act === "del-payment") { e.stopPropagation(); const row = t.closest(".li"); const go = () => { softDelete("payments", id, "Payment"); render(); refreshSheet(); }; if (row && !reduceMotion()) { row.classList.add("line", "out"); setTimeout(go, 160); } else go(); return; }
   if (act === "del-supplier") {
     const used = Object.values(state.bills).some(b => b.supplierId === id) || Object.values(state.payments).some(p => p.supplierId === id);
     if (used) { toast("This supplier has bills or payments. Delete those first."); return; }
-    if (!(await ask("Delete this supplier?", "This can't be undone."))) return; commit({ kind: "delete", col: "suppliers", docId: id }); closeSheet(); render(); toast("Supplier deleted"); return;
+    closeSheet(); softDelete("suppliers", id, "Supplier"); render(); return;
   }
 });
 document.addEventListener("input", e => {
@@ -912,7 +1009,7 @@ document.addEventListener("change", async e => {
   else if (id === "repYear") { ui.repMonth = e.target.value + "-01"; render(); }
   else if (id === "voiceLang") { cfg.voiceLang = e.target.value; ls.set("zee-config", cfg); toast("Voice language saved"); }
   else if (id === "pSup") showOwe();
-  else if (id === "bSup") { $("#newSup").classList.toggle("hidden", e.target.value !== "__new"); if (e.target.value === "__new") $("#nsName").focus(); }
+  else if (id === "bSup") { $("#newSup").classList.toggle("hidden", e.target.value !== "__new"); $$(".supchips button").forEach(b => b.classList.toggle("on", b.dataset.id === e.target.value)); if (e.target.value === "__new") $("#nsName").focus(); }
   else if (e.target.classList.contains("it")) {
     const line = e.target.closest(".line"), lr = lastRate(e.target.value);
     if (lr) { if (!$(".rt", line).value) $(".rt", line).value = lr.rate; if (!$(".cat", line).value && lr.category) $(".cat", line).value = lr.category; recalc(); }
@@ -935,9 +1032,39 @@ document.addEventListener("keydown", e => {
     $(".it", line.nextElementSibling).focus();
   }
 });
-window.addEventListener("online", () => { state.netErr = false; updateSync(); sync(); });
+window.addEventListener("online", () => { state.netErr = false; updateSync(); sync(); toast("Back online", { type: "ok" }); });
+window.addEventListener("pagehide", flushDeletes);
+// Android back button / browser back closes the top panel instead of leaving the app
+window.addEventListener("popstate", async () => {
+  if (ignorePop) { ignorePop = false; return; }
+  if (voicePushed) { closeVoice(true); return; }
+  if (sheetPushed) {
+    sheetPushed = false;
+    if (sheet && sheet.dirty && !(await ask("Discard changes?", "What you typed in this form will be lost.", "Discard"))) { history.pushState({ zee: "sheet" }, ""); sheetPushed = true; return; }
+    closeSheet(true);
+  }
+});
+// tap a number box: select it so typing replaces the old value
+document.addEventListener("focusin", e => { if (e.target.matches && e.target.matches("input[type=number]")) setTimeout(() => { try { e.target.select(); } catch { } }, 0); });
+// pull down to sync (phones)
+(() => {
+  let y0 = null, dy = 0;
+  document.addEventListener("touchstart", e => { y0 = (!cfg || cfg.mode !== "cloud" || sheet || $("#voiceRoot").innerHTML || window.scrollY > 2) ? null : e.touches[0].clientY; dy = 0; }, { passive: true });
+  document.addEventListener("touchmove", e => {
+    if (y0 == null) return; dy = e.touches[0].clientY - y0; const el = $("#ptr");
+    if (dy <= 8) { el.classList.remove("show", "ready"); el.style.transform = ""; return; }
+    const p = Math.min(dy, 120); el.classList.add("show"); el.classList.toggle("ready", dy > 84);
+    el.style.transform = `translate(-50%, ${-70 + p * 0.9}px) rotate(${p * 2.4}deg)`;
+  }, { passive: true });
+  document.addEventListener("touchend", () => {
+    if (y0 == null) return; const el = $("#ptr"), pulled = dy > 84; y0 = null; dy = 0;
+    if (!pulled) { el.classList.remove("show", "ready"); el.style.transform = ""; return; }
+    buzz(10); el.classList.add("spin-on");
+    Promise.resolve(sync(true)).finally(() => setTimeout(() => { el.classList.remove("spin-on", "show", "ready"); el.style.transform = ""; }, 250));
+  }, { passive: true });
+})();
 window.addEventListener("offline", updateSync);
-document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") sync(); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") sync(); else flushDeletes(); });
 setInterval(() => { if (document.visibilityState === "visible") sync(); }, 90000);
 
 /* ================= start ================= */
@@ -946,5 +1073,15 @@ if ("serviceWorker" in navigator && location.protocol === "https:") {
   let reloaded = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => { if (!reloaded && !sheet) { reloaded = true; toast("App updated"); } });
 }
-applyTheme(); loadCache(); render(); sync();
+function hideSplash() {
+  const sp = $("#splash"); if (!sp) return;
+  setTimeout(() => {
+    ui.enter = true; render();
+    if (reduceMotion()) { sp.remove(); return; }
+    sp.classList.add("out"); setTimeout(() => sp.remove(), 450);
+  }, Math.max(0, 700 - performance.now()));
+}
+applyTheme(); loadCache();
+state.loading = !!(cfg && cfg.mode === "cloud" && !state.lastSync);
+render(); hideSplash(); sync();
 })();

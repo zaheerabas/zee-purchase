@@ -1,6 +1,6 @@
 // Zee Purchase Book service worker: makes the app open offline.
 // Bump VERSION whenever you change app files so phones pick up the update.
-const VERSION = "zee-v1";
+const VERSION = "zee-v2";
 const SHELL = ["./", "./index.html", "./app.css", "./app.js", "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png", "./icons/favicon-32.png"];
 
 self.addEventListener("install", e => {

@@ -358,3 +358,148 @@ tfoot td{font-weight:700;background:var(--surface-2)}
 body.nocfg .bnav,body.nocfg .voicefab{display:none!important}
 body.nocfg main{padding-bottom:40px}
 .nav.hidden{display:none!important}
+
+/* =====================================================================
+   v2 motion, skeletons and ease-of-use layer
+   Product UI: short (150–300ms) exponential ease-outs, transform/opacity
+   only, every animation reduced under prefers-reduced-motion.
+   ===================================================================== */
+:root{
+  --ease-out:cubic-bezier(.16,1,.3,1); --ease-in:cubic-bezier(.7,0,.84,0); --ease-io:cubic-bezier(.65,0,.35,1);
+  --sk-a:#efe6ec; --sk-b:#f9f4f7;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--sk-a:#2a2130;--sk-b:#382d3f}}
+:root[data-theme="dark"]{--sk-a:#2a2130;--sk-b:#382d3f}
+body{overscroll-behavior-y:contain}
+
+/* ---------- skeletons ---------- */
+.sk{display:block;background:linear-gradient(100deg,var(--sk-a) 30%,var(--sk-b) 50%,var(--sk-a) 70%);background-size:300% 100%;animation:shimmer 1.4s linear infinite;border-radius:7px;max-width:100%}
+.sk.inv{--sk-a:rgba(255,255,255,.12);--sk-b:rgba(255,255,255,.26)}
+@keyframes shimmer{from{background-position:100% 0}to{background-position:0 0}}
+.sk-row{pointer-events:none}
+.sk-row .main{display:grid;gap:7px}
+.sk-row .amt{display:grid;gap:7px;justify-items:end}
+.photo-sk{width:100%;aspect-ratio:3/4;border-radius:var(--r-lg)}
+.scan .ic.sk{border-radius:14px}
+#readSk{margin-top:10px}
+#readSk .line{border-style:dashed}
+.vout .sk+.sk{margin-top:8px}
+.spin{width:16px;height:16px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;display:inline-block;animation:spin .7s linear infinite;flex:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ---------- press & hover feedback ---------- */
+.btn,.quick button,.li,.bnav a,.bnav button,.iconbtn,.addline,.examples button,.ways button,.supchips button,.mini{transition:transform .12s var(--ease-out),background-color .18s,border-color .18s,color .18s,box-shadow .18s}
+.btn:active:not(:disabled),.quick button:active,.iconbtn:active,.addline:active,.examples button:active,.ways button:active,.supchips button:active,.mini:active{transform:scale(.96)}
+button.li:active,.li[role=button]:active{transform:scale(.99)}
+.bnav .fab:active .dot{transform:scale(.92)}
+.bnav .fab .dot{transition:transform .14s var(--ease-out)}
+@media (hover:hover){.quick button:hover,.ways button:hover{transform:translateY(-1px);box-shadow:var(--shadow)}}
+
+/* bottom nav: active pill */
+.bnav a{position:relative}
+.bnav a svg{position:relative;z-index:1}
+.bnav a::before{content:"";position:absolute;top:3px;left:50%;width:56px;height:30px;margin-left:-28px;border-radius:15px;background:var(--brand-soft);opacity:0;transform:scaleX(.45);transition:transform .28s var(--ease-out),opacity .2s}
+.bnav a.on::before{opacity:1;transform:none}
+.nav a{transition:background-color .2s,color .2s}
+
+/* ---------- page transitions ---------- */
+#app{view-transition-name:page}
+::view-transition-old(root),::view-transition-new(root){animation:none}
+::view-transition-old(page){animation:vtOut .12s var(--ease-in) both}
+::view-transition-new(page){animation:vtIn .26s var(--ease-out) both}
+@keyframes vtOut{to{opacity:0}}
+@keyframes vtIn{from{opacity:0;transform:translateY(8px)}}
+.enter .ph,.enter .fig,.enter .quick button,.enter .li,.enter .filters,.enter .sec-h,.enter .start,.enter .installbar,.enter .card{animation:rise .38s var(--ease-out) both;animation-delay:calc(var(--i,0) * 28ms)}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+.enter .track i,.sheet .track i{animation:grow .6s var(--ease-out) both;animation-delay:.12s;transform-origin:left}
+.track i{transform-origin:left}
+@keyframes grow{from{transform:scaleX(0)}}
+
+/* ---------- sheets, dialogs, voice ---------- */
+.sheet-bg{animation:fadeIn .2s var(--ease-out) both}
+.sheet{animation:sheetIn .3s var(--ease-out) both}
+@media (min-width:700px){.sheet{animation-name:sheetInDesk}}
+.sheet-bg.out{animation:fadeOut .18s var(--ease-in) both;pointer-events:none}
+.sheet-bg.out .sheet{animation:sheetOut .18s var(--ease-in) both}
+@keyframes fadeIn{from{opacity:0}}
+@keyframes fadeOut{to{opacity:0}}
+@keyframes sheetIn{from{transform:translateY(36px);opacity:.3}}
+@keyframes sheetInDesk{from{transform:translateY(14px) scale(.985);opacity:0}}
+@keyframes sheetOut{to{transform:translateY(24px);opacity:0}}
+.dlg-bg{animation:fadeIn .16s var(--ease-out) both}
+.dlg{animation:pop .22s var(--ease-out) both}
+.dlg-bg.out{animation:fadeOut .14s var(--ease-in) both}
+.dlg-bg.out .dlg{animation:popOut .14s var(--ease-in) both}
+@keyframes pop{from{transform:scale(.94);opacity:0}}
+@keyframes popOut{to{transform:scale(.96);opacity:0}}
+.voice-bg{animation:fadeIn .2s var(--ease-out) both}
+.voice{animation:sheetIn .3s var(--ease-out) both}
+@media (min-width:700px){.voice{animation-name:sheetInDesk}}
+.voice-bg.out{animation:fadeOut .18s var(--ease-in) both;pointer-events:none}
+.voice-bg.out .voice{animation:sheetOut .18s var(--ease-in) both}
+.vout{animation:rise .26s var(--ease-out) both}
+
+/* ---------- toast with icon / action ---------- */
+.toast{animation:toastIn .28s var(--ease-out) both;padding:10px 12px 10px 16px;min-height:46px}
+.toast.out{animation:toastOut .18s var(--ease-in) both}
+@keyframes toastIn{from{opacity:0;transform:translate(-50%,14px) scale(.98)}}
+@keyframes toastOut{to{opacity:0;transform:translate(-50%,8px)}}
+.toast .ti{width:24px;height:24px;border-radius:50%;background:var(--green);color:var(--bg);display:grid;place-items:center;flex:none}
+.toast .ti svg{width:15px;height:15px}
+.toast .ti .draw{stroke-dasharray:24;stroke-dashoffset:24;animation:draw .38s .08s var(--ease-out) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.toast .tm{flex:1}
+.toast .tbtn{border:0;background:none;color:var(--gold-line);font-weight:800;padding:6px 8px;border-radius:8px;margin-left:4px;text-transform:uppercase;font-size:13px;letter-spacing:.04em}
+
+/* ---------- bill form helpers ---------- */
+.line{animation:lineIn .26s var(--ease-out) both}
+.line.out{animation:lineOut .16s var(--ease-in) both}
+@keyframes lineIn{from{opacity:0;transform:translateY(-6px)}}
+@keyframes lineOut{to{opacity:0;transform:translateX(18px)}}
+.supchips{display:flex;gap:8px;overflow-x:auto;padding-bottom:2px;scrollbar-width:none;margin-top:-4px}
+.supchips::-webkit-scrollbar{display:none}
+.supchips button{flex:none;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 12px 7px 7px;display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;white-space:nowrap}
+.supchips button .av{width:26px;height:26px;border-radius:50%;font-size:11px}
+.supchips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
+.mini{border:1px solid var(--line);background:var(--surface-2);border-radius:8px;padding:2px 8px;font-size:12.5px;font-weight:700;color:var(--brand);margin-left:6px}
+.pl{display:flex;align-items:center}
+.scan.busy{background:linear-gradient(100deg,var(--surface) 30%,var(--gold-soft) 50%,var(--surface) 70%);background-size:300% 100%;animation:shimmer 1.6s linear infinite}
+.scan.busy .ic{animation:none}
+.photo{opacity:0;transition:opacity .3s var(--ease-out)}
+.photo.ready{opacity:1}
+.scan .ic img{animation:fadeIn .3s var(--ease-out)}
+
+/* ---------- getting started (first use) ---------- */
+.start h2{font-family:var(--serif);font-weight:400;font-size:22px}
+.start p{margin:4px 0 14px}
+.ways{display:grid;gap:10px}
+@media (min-width:700px){.ways{grid-template-columns:repeat(3,minmax(0,1fr))}}
+.ways button{display:grid;grid-template-columns:auto 1fr;grid-template-areas:"i b" "i s";column-gap:12px;row-gap:2px;align-items:center;text-align:left;padding:14px;border-radius:var(--r-lg);border:1px solid var(--line);background:var(--surface-2)}
+.ways .qi{grid-area:i;width:44px;height:44px;border-radius:14px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand)}
+.ways button:nth-child(1) .qi{background:var(--gold-soft);color:var(--gold)}
+.ways button:nth-child(3) .qi{background:var(--green-soft);color:var(--green)}
+.ways b{grid-area:b;font-size:16px}
+.ways span:not(.qi){grid-area:s;color:var(--muted);font-size:13.5px}
+
+/* ---------- pull to refresh ---------- */
+#ptr{position:fixed;left:50%;top:calc(env(safe-area-inset-top,0px) + 62px);z-index:7;width:38px;height:38px;border-radius:50%;background:var(--surface);border:1px solid var(--line);box-shadow:var(--shadow);display:grid;place-items:center;color:var(--muted);transform:translate(-50%,-70px);opacity:0;transition:opacity .15s,color .15s;pointer-events:none}
+#ptr.show{opacity:1}
+#ptr.ready{color:var(--brand)}
+#ptr.spin-on{transform:translate(-50%,40px)!important;transition:transform .2s var(--ease-out)}
+#ptr.spin-on svg{animation:spin .8s linear infinite}
+@media (min-width:700px){#ptr{display:none}}
+
+/* ---------- splash exit (base styles inline in index.html) ---------- */
+#splash.out{animation:splashOut .42s var(--ease-in) forwards}
+#splash.out .sp-in{animation:splashIn .42s var(--ease-in) forwards}
+@keyframes splashOut{to{opacity:0;visibility:hidden}}
+@keyframes splashIn{to{transform:scale(1.06);opacity:0}}
+
+/* ---------- reduced motion: keep state changes, drop movement ---------- */
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:.01ms!important;animation-delay:0s!important;transition-duration:.01ms!important;scroll-behavior:auto!important}
+  .sk,.spin,#ptr.spin-on svg,.scan.busy{animation-duration:2.4s!important}
+  .mic.on::after{display:none}
+}
+.toast{width:max-content;max-width:calc(100vw - 32px)}
+@media (max-width:699px){.toast{bottom:calc(150px + env(safe-area-inset-bottom,0px))}}
