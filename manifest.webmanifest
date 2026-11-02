@@ -1,0 +1,20 @@
+{
+  "name": "Zee Collection · Purchase Book",
+  "short_name": "Zee Purchase",
+  "description": "Purchase bills, supplier khata and reports for Zee Collection, Sialkot.",
+  "start_url": "./#home",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f6f2f5",
+  "theme_color": "#5e2750",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "New bill", "url": "./#home", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
